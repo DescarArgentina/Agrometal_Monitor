@@ -22,6 +22,10 @@ public sealed class ConectorSettings
     public string TcxmlConfigBat { get; set; } = "";
     public string ExePrincipalContextoPath { get; set; } = "";
 
+    // Descartados: .plmxml basura (ej. duplicados "_idXXXX" de 1 KB) se apartan sin procesar
+    public string DescartadosPath { get; set; } = "";
+    public long TamanoMinimoBytes { get; set; } = 1024;   // <= este tamaño se descarta. 0 = desactivado
+
     public string LogPath { get; set; } = "";
     public int FileReadyTimeoutSeconds { get; set; } = 600;
     public int FileReadyPollMs { get; set; } = 500;
