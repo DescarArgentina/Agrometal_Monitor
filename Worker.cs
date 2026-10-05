@@ -67,6 +67,8 @@ public sealed class Worker : BackgroundService
         Directory.CreateDirectory(_cfg.MbomPendientesPath);
         Directory.CreateDirectory(_cfg.ProcesadosRootPath);
         Directory.CreateDirectory(_cfg.ContextoProcesadosRootPath);
+        if (_cfg.TamanoMinimoBytes > 0)
+            Directory.CreateDirectory(_cfg.DescartadosPath);
 
         _claimedDir = Path.Combine(_cfg.MbomPendientesPath, "_CLAIMED");
         Directory.CreateDirectory(_claimedDir);
@@ -267,6 +269,9 @@ public sealed class Worker : BackgroundService
         if (string.IsNullOrWhiteSpace(_cfg.ContextoFilePrefix))
             throw new InvalidOperationException("Configuración inválida: ContextoFilePrefix vacío.");
 
+        if (_cfg.TamanoMinimoBytes > 0 && string.IsNullOrWhiteSpace(_cfg.DescartadosPath))
+            throw new InvalidOperationException("Configuración inválida: DescartadosPath vacío (o poner TamanoMinimoBytes = 0 para desactivar).");
+
         if (_cfg.FileReadyTimeoutSeconds <= 0) _cfg.FileReadyTimeoutSeconds = 600;
         if (_cfg.FileReadyPollMs <= 0)         _cfg.FileReadyPollMs = 500;
     }
@@ -451,6 +456,8 @@ public sealed class Worker : BackgroundService
 
             if (!File.Exists(rawPath)) return null;
 
+            if (TryDescartarSiEsChico(rawPath, "MBOM")) return null;
+
             var originalFileName = Path.GetFileName(rawPath);
             var originalName     = Path.GetFileNameWithoutExtension(rawPath);
             var ext              = Path.GetExtension(rawPath);
@@ -506,6 +513,14 @@ public sealed class Worker : BackgroundService
 
         var jobDir = Path.GetDirectoryName(claimedFilePath);
         var jobId  = "";
+
+        // Por si quedó en CLAIMED algo chico reclamado antes de existir este filtro
+        if (TryDescartarSiEsChico(claimedFilePath, "MBOM"))
+        {
+            if (!string.IsNullOrWhiteSpace(jobDir))
+                TryDeleteJobDirIfEmpty(jobDir);
+            return;
+        }
 
         if (!string.IsNullOrWhiteSpace(jobDir))
             jobId = new DirectoryInfo(jobDir).Name;
@@ -597,6 +612,30 @@ public sealed class Worker : BackgroundService
         if (string.IsNullOrWhiteSpace(originalBase)) return "SIN_NOMBRE";
         var idx = originalBase.IndexOf("M-", StringComparison.OrdinalIgnoreCase);
         return idx >= 0 ? originalBase.Substring(idx) : originalBase;
+    }
+
+    /// <summary>
+    /// Si el archivo pesa TamanoMinimoBytes o menos (exportaciones basura de Teamcenter,
+    /// ej. duplicados "_idXXXX" de 1 KB), lo mueve a DescartadosPath con la fecha/hora
+    /// como prefijo y devuelve true. No se procesa. Debe llamarse con el archivo ya estable.
+    /// </summary>
+    private bool TryDescartarSiEsChico(string path, string tipo)
+    {
+        if (_cfg.TamanoMinimoBytes <= 0) return false;
+
+        var size = new FileInfo(path).Length;
+        if (size > _cfg.TamanoMinimoBytes) return false;
+
+        var nombre = Path.GetFileName(path);
+        var dest   = Path.Combine(_cfg.DescartadosPath, $"{DateTime.Now:yyyyMMdd_HHmmss}_{nombre}");
+        if (File.Exists(dest))
+            dest = Path.Combine(_cfg.DescartadosPath,
+                $"{DateTime.Now:yyyyMMdd_HHmmss}_{Path.GetFileNameWithoutExtension(nombre)}__{NewShortId(8)}{Path.GetExtension(nombre)}");
+
+        File.Move(path, dest);
+        _logger.LogWarning("DESCARTADO {Tipo} ({Size} bytes <= {Min}): {Src} -> {Dest}",
+            tipo, size, _cfg.TamanoMinimoBytes, path, dest);
+        return true;
     }
 
     private void TryDeleteJobDirIfEmpty(string jobDir)
@@ -812,6 +851,8 @@ public sealed class Worker : BackgroundService
             _logger.LogWarning("El archivo Contexto ya no existe al momento de procesar: {File}", pendingFilePath);
             return;
         }
+
+        if (TryDescartarSiEsChico(pendingFilePath, "Contexto")) return;
 
         var originalFileName = Path.GetFileName(pendingFilePath);
         var originalBase     = Path.GetFileNameWithoutExtension(pendingFilePath);
